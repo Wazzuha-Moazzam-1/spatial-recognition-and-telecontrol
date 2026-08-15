@@ -1,24 +1,13 @@
 import time
 import cv2
-import mediapipe as mp
-import math
-import socket
-import pyautogui as pag
-import numpy as np
-import sys
 
-
-TARGET_IP = "127.0.0.1"
-TARGET_PORT = 5005
-client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 class state_stuff:
     def __init__(self,button_id, roi_tuple, color, threshold) -> None:
 
         self.id = button_id
-        self.roi = roi_tuple            # e.g., (100, 100, 200, 300)
+        self.roi = roi_tuple           
         self.color = color
-
 
         # Global System State Initialization
         self.toggle_state = False       # Global System State: OFF (False) or ON (True)
@@ -29,6 +18,8 @@ class state_stuff:
         self.elapsed_time = 0.0
         self.is_scrolling = False
         self.is_dragging = False
+        self.is_pinched = False
+
     def state_change(self):
 
         if not self.is_hovering:
@@ -44,10 +35,6 @@ class state_stuff:
                 self.toggle_state = not self.toggle_state
                 self.has_triggered = True
                 print(f"STATE CHANGED: System is now {'ACTIVE' if self.toggle_state else 'IDLE'}")
-
-        if self.elapsed_time >= self.HOLD_THRESHOLD and not self.has_triggered:
-            self.toggle_state = not self.toggle_state
-            self.has_triggered = True
     
 
     def reset_state(self):
@@ -77,12 +64,6 @@ class state_stuff:
                 -1
             )
 
-            # Inside state_stuff.state_change() or your pinch logic:
-    def send_packet(self,command_str: str):
-        """Serializes string data into raw bytes and fires across loopback."""
-        payload = command_str.encode('utf-8')
-        client_socket.sendto(payload, (TARGET_IP, TARGET_PORT))
-
 
     def check_pinch(self, dist, threshold=30):
         """Edge-Triggered Euclidean Pinch Engine (Prevents Network Flooding)."""
@@ -91,9 +72,7 @@ class state_stuff:
         # Rising Edge: Present Reality is True, but Historical Record is False
         if currently_pinched and not self.is_pinched:
             self.is_pinched = True
-            pag.click()  #not working
-            self.send_packet("command")
-            #yahan pe packet send kro
+            
         
         # Reset Latch: Hand relaxes beyond distance threshold
         elif not currently_pinched:
@@ -107,15 +86,16 @@ class state_stuff:
         # Rising Edge: Initiate the Grab
         if currently_dragging and not self.is_dragging:
             self.is_dragging = True
-            pag.mouseDown() # Clamp down on the OS
-            print("SYSTEM LOG: Drag sequence initiated.")
+            
         
         # Falling Edge: Release the Grab
         elif not currently_dragging and self.is_dragging:
             self.is_dragging = False
-            pag.mouseUp() # Let go of the OS
-            print("SYSTEM LOG: Drag sequence terminated.")
+            
             
         return self.is_dragging
+
+
+    
 
     
