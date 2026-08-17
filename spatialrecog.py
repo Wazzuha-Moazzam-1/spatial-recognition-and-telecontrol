@@ -10,12 +10,25 @@ import spatialClass as sc
 from pycaw.pycaw import AudioUtilities
 import serial
 import digitalCanvas as dc
+import json
+import socket
 
-telemetry_link = None
+# Initialize the UDP Socket (Action at a distance)
+UDP_IP = "192.168.1.X" # Replace with the target computer's IPv4 address
+UDP_PORT = 5005
 try:
-    telemetry_link = serial.Serial(port='COM3',baudrate = 9600,timeout=0.1)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+except:
+    print("connection UDP failed")
+
+
+
+arduino = None
+try:
+    arduino = serial.Serial(port='COM3',baudrate = 9600,timeout=0.1)
     time.sleep(1)
 except:
+    
     print("connection failed with arduino..")
 
 
@@ -53,6 +66,39 @@ hands = mp_hands.Hands(
 
 vid = cv2.VideoCapture(0, cv2.CAP_DSHOW)
 frame_q = queue.Queue(maxsize=5)
+
+
+
+
+class AlphaBetaFilter:
+    def __init__(self, alpha=0.5, beta=0.1, initial_position=90.0):
+        # The internal state of the universe
+        self.position = initial_position
+        self.velocity = 0.0 
+        
+        # The confidence weights
+        self.alpha = alpha  # How much we trust the raw camera position
+        self.beta = beta    # How much we trust our calculated velocity
+        
+        self.last_time = time.time()
+
+    def update(self, measurement: float) -> int:
+        current_time = time.time()
+        dt = current_time - self.last_time
+        if dt == 0: 
+            dt = 0.001 
+            
+        self.last_time = current_time
+        predicted_position = self.position + (self.velocity * dt)
+       
+        residual = measurement - predicted_position
+
+        self.position = predicted_position + (self.alpha * residual)        
+        self.velocity = self.velocity + (self.beta * residual / dt)
+
+        return int(max(0, min(180, self.position)))
+
+z_filter = AlphaBetaFilter(alpha=0.6, beta=0.05, initial_position=90.0)
 
 
 def producer():
@@ -119,6 +165,30 @@ def consumer():
                 tx, ty = int(thumb_tip.x * CAM_W), int(thumb_tip.y * CAM_H)
                 mx, my = int(middle_tip.x * CAM_W), int(middle_tip.y * CAM_H)
 
+                # 1. THE MATH: Convert the raw float from MediaPipe into a raw 0-180 angle
+                raw_angle = telemetry_arduino(cz) 
+                
+                # 2. THE FILTER: Pass the raw angle through the Alpha-Beta filter to predict and smooth
+                smooth_predictive_angle = z_filter.update(raw_angle)
+                
+                # 3. THE PACKAGING: Wrap the smoothed integer in delimiters and encode to bytes
+                byte_packet = form_packet(smooth_predictive_angle)
+
+                inverted_x = 1.0 - cx
+                #to remotely control stuff and look cool
+                telemetry = {
+                            "x": inverted_x,
+                            "y": cy,
+                            "z_depth": cz # We'll save this for a 'click' mechanism later
+                        }
+               # Serialize the dictionary to a JSON string, then to physical bytes
+                payload = json.dumps(telemetry).encode('utf-8')
+                try:
+                # Fire the packet into the void
+                    sock.sendto(payload, (UDP_IP, UDP_PORT))
+                except:
+                    pass
+
                                 
                 # Convert the relative depth into an absolute integer thickness
                 # Note: You will need to `print(raw_z)` first to observe your specific camera's depth range
@@ -175,16 +245,16 @@ def consumer():
                     cv2.putText(frame, "TRANSMITTING: FORWARD", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                     
                     # Fire the byte down the USB cable to the C++ firmware
-                    if telemetry_link is not None and telemetry_link.is_open:
-                        telemetry_link.write(bytes('F', 'utf-8'))
+                    if arduino is not None and arduino.is_open:
+                        arduino.write(byte_packet)
                         print("transmitiiinggg forwardsss")
                         
                 elif finger_vector == [0, 0, 0, 0, 0]:
                     # State: Fist -> Command: Brake
                     cv2.putText(frame, "TRANSMITTING: BRAKE", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                     print("brakeeeee")
-                    if telemetry_link is not None and telemetry_link.is_open :
-                        telemetry_link.write(bytes('S', 'utf-8'))
+                    if arduino is not None and arduino.is_open :
+                        arduino.write(byte_packet)
 
 
                 else:
@@ -262,6 +332,10 @@ def consumer():
             vid.release()
             break
 
+        
+        
+
+
 
 def calc_Thumb_Distance(x1,x2,y1,y2):
 
@@ -286,8 +360,33 @@ def get_finger_states(hand_landmarks) -> list[int]:
         
     return states
 
+def telemetry_arduino(z_dist: float) -> int:
+    # Calculate the angle (inverting the negative Z to a positive angle)
+    raw_angle = -529.41 * z_dist
+    
+    # Cast to integer
+    angle = int(raw_angle)
+    
+    # Mathematical Clamp: Force the angle to remain strictly between 0 and 180
+    safe_angle = max(0, min(180, angle))
+    
+    return safe_angle
+
+
+def form_packet(angle: int):
+    # Use an f-string to cleanly format the text
+    packet = f"<{angle}>"
+    
+    # Materialize the abstract string into a physical byte array
+    byte_packet = packet.encode('utf-8')
+    
+    return byte_packet
+
+
 consumer()
 
 vid.release()
 cv2.destroyAllWindows()
+
+
 
